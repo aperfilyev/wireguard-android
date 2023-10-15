@@ -5,8 +5,14 @@
 
 package com.wireguard.android.backend;
 
+import android.annotation.TargetApi;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.system.OsConstants;
@@ -24,7 +30,6 @@ import com.wireguard.crypto.KeyFormatException;
 import com.wireguard.util.NonNullForAll;
 
 import java.net.InetAddress;
-import java.time.Instant;
 import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -238,7 +243,7 @@ public final class GoBackend implements Backend {
             final VpnService service;
             if (!vpnService.isDone()) {
                 Log.d(TAG, "Requesting to start VpnService");
-                context.startService(new Intent(context, VpnService.class));
+                startServiceCompat(context, new Intent(context, VpnService.class));
             }
 
             try {
@@ -351,6 +356,14 @@ public final class GoBackend implements Backend {
         tunnel.onStateChange(state);
     }
 
+    private static void startServiceCompat(final Context context, final Intent intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
+    }
+
     /**
      * Callback for {@link GoBackend} that is invoked when {@link VpnService} is started by the
      * system's Always-On VPN mode.
@@ -392,6 +405,11 @@ public final class GoBackend implements Backend {
      * {@link android.net.VpnService} implementation for {@link GoBackend}
      */
     public static class VpnService extends android.net.VpnService {
+
+        private static final String NOTIFICATION_CHANNEL_ID = "NOTIFICATION_CHANNEL_ID";
+        private static final String NOTIFICATION_CHANNEL_NAME = "WireGuard";
+        private static final int NOTIFICATION_ID = 1;
+
         @Nullable private GoBackend owner;
 
         public Builder getBuilder() {
@@ -423,6 +441,13 @@ public final class GoBackend implements Backend {
 
         @Override
         public int onStartCommand(@Nullable final Intent intent, final int flags, final int startId) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                createNotificationChannel();
+                final Notification notification = new Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+                        .build();
+                startForegroundCompat(this, notification);
+            }
+
             vpnService.complete(this);
             if (intent == null || intent.getComponent() == null || !intent.getComponent().getPackageName().equals(getPackageName())) {
                 Log.d(TAG, "Service started by Always-on VPN feature");
@@ -430,6 +455,27 @@ public final class GoBackend implements Backend {
                     alwaysOnCallback.alwaysOnTriggered();
             }
             return super.onStartCommand(intent, flags, startId);
+        }
+
+        @TargetApi(Build.VERSION_CODES.O)
+        private void createNotificationChannel() {
+            final NotificationChannel channel = new NotificationChannel(
+                    NOTIFICATION_CHANNEL_ID,
+                    NOTIFICATION_CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            final NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.createNotificationChannel(channel);
+        }
+
+        private static void startForegroundCompat(final Service service, final Notification notification) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                service.startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED);
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                service.startForeground(NOTIFICATION_ID, notification, 0);
+            } else {
+                service.startForeground(NOTIFICATION_ID, notification);
+            }
         }
 
         public void setOwner(final GoBackend owner) {
